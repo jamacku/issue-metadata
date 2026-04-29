@@ -4,6 +4,7 @@ import { assignNewMetadata, getBodyAndMetadata, parseMetadata } from './util';
 
 import type { Metadata, MetadataObject, RequestDetails } from './schema';
 import { idSchema, metadataObjectSchema, requestDetailsSchema } from './schema';
+import { getIssueComments, getIssueDescription } from './lib';
 
 export type { RequestDetails };
 
@@ -12,7 +13,11 @@ export default class MetadataController {
   private readonly schema: Metadata;
   readonly regexp: RegExp;
 
-  constructor(uniqueID: string, settings: RequestDetails) {
+  constructor(
+    uniqueID: string,
+    settings: RequestDetails,
+    readonly useIssueDescription = true
+  ) {
     const verifiedID = idSchema.parse(uniqueID);
     this.requestDefaults = requestDetailsSchema.parse(settings);
 
@@ -43,14 +48,23 @@ export default class MetadataController {
     issue: number,
     key?: string
   ): Promise<MetadataObject | undefined> {
-    const body =
-      (
-        await request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-          ...this.requestDefaults,
-          issue_number: issue,
-        })
-      ).data.body || '';
+    // If requested look for metadata in issue comments instead of the description
+    if (!this.useIssueDescription) {
+      const comments = await getIssueComments(issue, this.requestDefaults);
 
+      for (const comment of comments.data) {
+        const body = comment.body || '';
+        const metadata = parseMetadata(body, key, this.regexp);
+        if (metadata) {
+          return metadata;
+        }
+      }
+
+      // If no metadata was found in the comments, return undefined
+      return undefined;
+    }
+
+    const body = await getIssueDescription(issue, this.requestDefaults);
     return parseMetadata(body, key, this.regexp);
   }
 
@@ -65,13 +79,7 @@ export default class MetadataController {
     key: string | object,
     value?: string
   ): Promise<MetadataObject> {
-    let issueBody =
-      (
-        await request('GET /repos/{owner}/{repo}/issues/{issue_number}', {
-          ...this.requestDefaults,
-          issue_number: issue,
-        })
-      ).data.body || '';
+    let issueBody = await (issue, this.requestDefaults);
 
     let { body, metadata } = getBodyAndMetadata(issueBody, this.regexp);
 
